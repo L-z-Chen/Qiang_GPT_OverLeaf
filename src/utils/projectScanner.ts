@@ -1,11 +1,49 @@
 'use strict';
 
 import { ProjectFile, ProjectContext } from '../types';
+import { 
+  MAX_LENGTH_PER_FILE_PREVIEW, 
+  MAX_LENGTH_MAIN_FILE_PREVIEW, 
+  MAX_LENGTH_CURRENT_FILE_PREVIEW,
+  MAX_TOTAL_PROJECT_CONTEXT 
+} from '../constants';
+
+// Cache for project context to avoid re-scanning on every cursor movement
+let projectContextCache: ProjectContext | null = null;
+let lastCacheTime = 0;
+const CACHE_DURATION = 30000; // 30 seconds cache
 
 /**
  * Scans the Overleaf project for all .tex files and extracts their content
+ * Uses caching to avoid expensive re-scans on every cursor movement
  */
 export async function scanProjectFiles(): Promise<ProjectContext> {
+  const now = Date.now();
+  
+  // Return cached context if it's still valid
+  if (projectContextCache && (now - lastCacheTime) < CACHE_DURATION) {
+    return projectContextCache;
+  }
+  
+  // Clear cache if it's expired
+  if (projectContextCache && (now - lastCacheTime) >= CACHE_DURATION) {
+    projectContextCache = null;
+  }
+  
+  // Perform the actual scan
+  const projectContext = await performProjectScan();
+  
+  // Cache the result
+  projectContextCache = projectContext;
+  lastCacheTime = now;
+  
+  return projectContext;
+}
+
+/**
+ * Performs the actual project scanning (expensive operation)
+ */
+async function performProjectScan(): Promise<ProjectContext> {
   const projectFiles: ProjectFile[] = [];
   let currentFile = '';
   let mainDocument: ProjectFile | undefined;
@@ -171,17 +209,118 @@ export function createProjectSummary(projectContext: ProjectContext): string {
   }
 
   let summary = '### Project Structure ###\n';
+  let totalContextLength = 0;
   
-  for (const file of projectContext.allTexFiles) {
+  // Sort files by importance: main document first, then current file, then others
+  const sortedFiles = [...projectContext.allTexFiles].sort((a, b) => {
+    const aIsMain = a === projectContext.mainDocument;
+    const bIsMain = b === projectContext.mainDocument;
+    const aIsCurrent = a.name === projectContext.currentFile;
+    const bIsCurrent = b.name === projectContext.currentFile;
+    
+    if (aIsMain && !bIsMain) return -1;
+    if (!aIsMain && bIsMain) return 1;
+    if (aIsCurrent && !bIsCurrent) return -1;
+    if (!aIsCurrent && bIsCurrent) return 1;
+    return 0;
+  });
+  
+  for (const file of sortedFiles) {
     const isMain = file === projectContext.mainDocument;
     const isCurrent = file.name === projectContext.currentFile;
     
+    // Determine preview length based on file importance
+    let previewLength: number;
+    if (isMain) {
+      previewLength = MAX_LENGTH_MAIN_FILE_PREVIEW;
+    } else if (isCurrent) {
+      previewLength = MAX_LENGTH_CURRENT_FILE_PREVIEW;
+    } else {
+      previewLength = MAX_LENGTH_PER_FILE_PREVIEW;
+    }
+    
+    // Check if adding this file would exceed total context limit
+    const estimatedFileContext = previewLength + 100; // +100 for formatting
+    if (totalContextLength + estimatedFileContext > MAX_TOTAL_PROJECT_CONTEXT) {
+      // Skip this file if it would exceed the limit
+      continue;
+    }
+    
     summary += `${isMain ? 'MAIN' : isCurrent ? 'CURRENT' : 'FILE'}: ${file.name}\n`;
     
-    // Include a preview of the file content (first 500 characters)
-    const preview = file.content.substring(0, 500).replace(/\n/g, '\\n');
-    summary += `Content preview: ${preview}${file.content.length > 500 ? '...' : ''}\n\n`;
+    // Get the most relevant part of the file content
+    let preview: string;
+    if (isCurrent) {
+      // For current file, get content around the cursor position
+      preview = getRelevantContentPreview(file.content, previewLength);
+    } else {
+      // For other files, get the beginning (usually contains important structure)
+      preview = file.content.substring(0, previewLength);
+    }
+    
+    // Clean up the preview
+    preview = preview.replace(/\n/g, '\\n').trim();
+    summary += `Content preview: ${preview}${file.content.length > previewLength ? '...' : ''}\n\n`;
+    
+    totalContextLength += preview.length + 100; // +100 for formatting
   }
   
+  // Add context usage info
+  summary += `[Context used: ${totalContextLength}/${MAX_TOTAL_PROJECT_CONTEXT} characters]\n`;
+  
   return summary;
+}
+
+/**
+ * Gets the most relevant content preview for the current file
+ * Tries to get content around the cursor position rather than just the beginning
+ */
+function getRelevantContentPreview(content: string, maxLength: number): string {
+  if (content.length <= maxLength) {
+    return content;
+  }
+  
+  // Try to find a good starting point (not just the beginning)
+  // Look for the last section or chapter before the end
+  const lastSectionIndex = content.lastIndexOf('\\section{');
+  const lastChapterIndex = content.lastIndexOf('\\chapter{');
+  const lastSubsectionIndex = content.lastIndexOf('\\subsection{');
+  
+  let startIndex = 0;
+  if (lastChapterIndex > 0) {
+    startIndex = Math.max(0, lastChapterIndex - 500);
+  } else if (lastSectionIndex > 0) {
+    startIndex = Math.max(0, lastSectionIndex - 300);
+  } else if (lastSubsectionIndex > 0) {
+    startIndex = Math.max(0, lastSubsectionIndex - 200);
+  }
+  
+  // Ensure we don't start in the middle of a word or command
+  const nextNewline = content.indexOf('\n', startIndex);
+  if (nextNewline > startIndex && nextNewline < startIndex + 100) {
+    startIndex = nextNewline + 1;
+  }
+  
+  return content.substring(startIndex, startIndex + maxLength);
+}
+
+/**
+ * Forces a refresh of the project context cache
+ * Call this when files are added/removed or when cache is stale
+ */
+export function invalidateProjectCache(): void {
+  projectContextCache = null;
+  lastCacheTime = 0;
+}
+
+/**
+ * Gets cached project context without triggering a scan
+ * Returns null if no cache exists or cache is expired
+ */
+export function getCachedProjectContext(): ProjectContext | null {
+  const now = Date.now();
+  if (projectContextCache && (now - lastCacheTime) < CACHE_DURATION) {
+    return projectContextCache;
+  }
+  return null;
 } 

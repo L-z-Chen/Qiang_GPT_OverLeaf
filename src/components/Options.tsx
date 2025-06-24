@@ -108,6 +108,7 @@ const OptionsForm = () => {
                 <b>after</b>: Text after the cursor (max 5000 chars).<br />
                 <b>projectContext</b>: Summary of all .tex files in the project.<br />
                 <b>currentFile</b>: Name of the currently active file.<br /><br />
+                Project context includes: Main file (3000 chars), current file (2500 chars), other files (2000 chars each), with total limit of 15,000 chars.<br /><br />
                 Add variables in the template using a Jinja like format, e.g. <code>&#123;&#123; before[-1000:] &#125;&#125;</code> or <code>&#123;&#123; projectContext &#125;&#125;</code>.
               </span>
             </span>

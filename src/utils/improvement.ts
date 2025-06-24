@@ -6,17 +6,21 @@ import {
 } from '../constants';
 import { postProcessToken, renderPrompt } from './helper';
 import { Options, TextContent, StreamChunk, ProjectContext } from '../types';
-import { scanProjectFiles, createProjectSummary } from './projectScanner';
+import { scanProjectFiles, createProjectSummary, getCachedProjectContext } from './projectScanner';
 
 const HOSTED_IMPROVE_URL = 'https://embedding.azurewebsites.net/improve';
 
 export async function getImprovement(content: TextContent, prompt: string, options: Options, signal: AbortSignal) {
-  // Scan project files for context
-  let projectContext: ProjectContext | null = null;
-  try {
-    projectContext = await scanProjectFiles();
-  } catch (error) {
-    console.warn('Failed to scan project files, continuing without project context:', error);
+  // Use cached project context to avoid expensive scans
+  let projectContext: ProjectContext | null = getCachedProjectContext();
+  
+  // Only scan if we don't have cached context
+  if (!projectContext) {
+    try {
+      projectContext = await scanProjectFiles();
+    } catch (error) {
+      console.warn('Failed to scan project files, continuing without project context:', error);
+    }
   }
 
   if (!options.apiKey) {
@@ -71,12 +75,16 @@ export async function getImprovement(content: TextContent, prompt: string, optio
 export async function* getImprovementStream(content: TextContent, prompt: string, options: Options, signal: AbortSignal):
   AsyncGenerator<StreamChunk, void, unknown> {
 
-  // Scan project files for context
-  let projectContext: ProjectContext | null = null;
-  try {
-    projectContext = await scanProjectFiles();
-  } catch (error) {
-    console.warn('Failed to scan project files, continuing without project context:', error);
+  // Use cached project context to avoid expensive scans
+  let projectContext: ProjectContext | null = getCachedProjectContext();
+  
+  // Only scan if we don't have cached context
+  if (!projectContext) {
+    try {
+      projectContext = await scanProjectFiles();
+    } catch (error) {
+      console.warn('Failed to scan project files, continuing without project context:', error);
+    }
   }
 
   if (!options.apiKey) {
@@ -159,14 +167,58 @@ function buildImprovePrompt(content: TextContent, template: string, projectConte
     return renderPrompt(template, content, projectContext);
   }
 
-  let prompt = `Rewrite and improve the following content:\n`;
+  // Create an integrated improvement prompt for ICML papers
+  let prompt = `You are an expert LaTeX editor specializing in ICML (International Conference on Machine Learning) papers. `;
   
-  // Add project context if available
   if (projectContext && projectContext.allTexFiles.length > 0) {
-    prompt += `\n### Project Context ###\n${createProjectSummary(projectContext)}\n`;
+    const mainFile = projectContext.mainDocument;
+    const currentFile = projectContext.allTexFiles.find(f => f.name === projectContext.currentFile);
+    
+    prompt += `\n\n## Context Analysis\n`;
+    
+    if (mainFile) {
+      const mainContent = mainFile.content;
+      const documentClass = mainContent.match(/\\documentclass\[.*?\]\{(.*?)\}/)?.[1] || 
+                           mainContent.match(/\\documentclass\{(.*?)\}/)?.[1] || 'article';
+      prompt += `**Document Type:** ${documentClass} (ICML paper)\n`;
+    }
+    
+    if (currentFile) {
+      const currentSection = extractCurrentSection(currentFile.content, content.before);
+      prompt += `**Current Section:** ${currentSection || 'Unknown'}\n`;
+    }
   }
   
-  prompt += `${content.selection}`;
+  prompt += `\n## Improvement Guidelines for ICML Papers\n`;
+  prompt += `- Improve clarity and precision for machine learning audience\n`;
+  prompt += `- Ensure mathematical notation is correct and consistent\n`;
+  prompt += `- Maintain ICML style: technical but accessible\n`;
+  prompt += `- Fix any LaTeX syntax errors\n`;
+  prompt += `- Improve flow and readability\n`;
+  prompt += `- Ensure proper academic tone and formality\n`;
+  
+  prompt += `\n## Text to Improve\n`;
+  prompt += `${content.selection}\n\n`;
+  prompt += `**Improved Version:**`;
   
   return prompt;
+}
+
+function extractCurrentSection(content: string, beforeText: string): string | null {
+  const beforeIndex = content.indexOf(beforeText);
+  if (beforeIndex === -1) return null;
+  
+  const beforeContent = content.substring(0, beforeIndex);
+  const sectionMatch = beforeContent.match(/\\section\{(.*?)\}/g);
+  const chapterMatch = beforeContent.match(/\\chapter\{(.*?)\}/g);
+  
+  if (chapterMatch && chapterMatch.length > 0) {
+    const lastChapter = chapterMatch[chapterMatch.length - 1];
+    return lastChapter.match(/\{(.*?)\}/)?.[1] || null;
+  } else if (sectionMatch && sectionMatch.length > 0) {
+    const lastSection = sectionMatch[sectionMatch.length - 1];
+    return lastSection.match(/\{(.*?)\}/)?.[1] || null;
+  }
+  
+  return null;
 }
