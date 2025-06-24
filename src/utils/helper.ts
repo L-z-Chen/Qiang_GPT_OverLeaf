@@ -1,9 +1,10 @@
 import { LOCAL_STORAGE_KEY_API_KEY, LOCAL_STORAGE_KEY_BASE_URL, LOCAL_STORAGE_KEY_MODEL, LOCAL_STORAGE_KEY_OPTIONS } from "../constants";
-import { Options, TextContent } from "../types";
+import { Options, TextContent, ProjectContext } from "../types";
+import { createProjectSummary } from "./projectScanner";
 
 const Prefixes = ["```latex\n", "```latex", "```"];
 const Suffixes = ["\n```", "```"];
-const PromptVariableRegex = /\{\{[\w]*(selection|before|after)(\[([-]?\d*):([-]?\d*)\])?[\w]*\}\}/g;
+const PromptVariableRegex = /\{\{[\w]*(selection|before|after|projectContext|currentFile)(\[([-]?\d*):([-]?\d*)\])?[\w]*\}\}/g;
 
 export function postProcessToken(token: string | null) {
   if (!token) return '';
@@ -54,9 +55,19 @@ export function getQueryParams() {
   return params;
 }
 
-export function renderPrompt(prompt: string, content: TextContent) {
+export function renderPrompt(prompt: string, content: TextContent, projectContext?: ProjectContext | null) {
   return prompt.replace(PromptVariableRegex, (_, variable_name, __, start, end) => {
+    if (variable_name === 'projectContext') {
+      return projectContext ? createProjectSummary(projectContext) : '';
+    }
+    
+    if (variable_name === 'currentFile') {
+      return projectContext?.currentFile || 'main.tex';
+    }
+    
     const variable = content[variable_name as keyof TextContent];
+    if (!variable) return '';
+    
     let startIdx = parseInt(start);
     if (isNaN(startIdx)) startIdx = 0;
     let endIdex = parseInt(end);

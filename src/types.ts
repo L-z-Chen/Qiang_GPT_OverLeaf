@@ -67,3 +67,15 @@ export interface TextContent {
   after: string,
   selection: string,
 }
+
+export interface ProjectFile {
+  name: string,
+  content: string,
+  path: string,
+}
+
+export interface ProjectContext {
+  currentFile: string,
+  allTexFiles: ProjectFile[],
+  mainDocument?: ProjectFile,
+}

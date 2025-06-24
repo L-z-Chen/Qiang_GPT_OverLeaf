@@ -6,19 +6,38 @@ import {
   DEFAULT_MODEL,
 } from '../constants';
 import { postProcessToken, renderPrompt } from './helper';
-import { Options, StreamChunk, TextContent } from '../types';
+import { Options, StreamChunk, TextContent, ProjectContext } from '../types';
+import { scanProjectFiles, createProjectSummary } from './projectScanner';
 
 const HOSTED_COMPLETE_URL = 'https://embedding.azurewebsites.net/complete';
 
 export async function* getSuggestion(content: TextContent, signal: AbortSignal, options: Options):
   AsyncGenerator<StreamChunk, void, unknown> {
 
+  // Scan project files for context
+  let projectContext: ProjectContext | null = null;
+  try {
+    projectContext = await scanProjectFiles();
+  } catch (error) {
+    console.warn('Failed to scan project files, continuing without project context:', error);
+  }
+
   if (!options.apiKey) {
     try {
+      const requestBody: any = { 
+        content: content.before, 
+        stream: true 
+      };
+      
+      // Add project context if available
+      if (projectContext && projectContext.allTexFiles.length > 0) {
+        requestBody.projectContext = createProjectSummary(projectContext);
+      }
+
       const response = await fetch(HOSTED_COMPLETE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: content.before, stream: true }),
+        body: JSON.stringify(requestBody),
         signal: signal,
       });
 
@@ -59,7 +78,7 @@ export async function* getSuggestion(content: TextContent, signal: AbortSignal, 
           messages: [
             {
               role: 'user',
-              content: buildSuggestionPrompt(content, options.suggestionPrompt),
+              content: buildSuggestionPrompt(content, options.suggestionPrompt, projectContext),
             },
           ],
           model: options.model ?? DEFAULT_MODEL,
@@ -81,19 +100,25 @@ export async function* getSuggestion(content: TextContent, signal: AbortSignal, 
   }
 }
 
-function buildSuggestionPrompt(content: TextContent, template: string | undefined) {
+function buildSuggestionPrompt(content: TextContent, template: string | undefined, projectContext: ProjectContext | null) {
   if (!!template) {
     if (template.indexOf('<input>') >= 0)
       return template.replace('<input>', content.before.slice(-1000));
 
-    return renderPrompt(template, content);
+    return renderPrompt(template, content, projectContext);
   }
 
-  return (
-    `Continue ${content.before.endsWith('\n') ? '' : 'the last paragraph of '}the academic paper in LaTeX below, ` +
-    `making sure to maintain semantic continuity.\n\n` +
-    `### Beginning of the paper ###\n` +
+  let prompt = `Continue ${content.before.endsWith('\n') ? '' : 'the last paragraph of '}the academic paper in LaTeX below, ` +
+    `making sure to maintain semantic continuity.\n\n`;
+
+  // Add project context if available
+  if (projectContext && projectContext.allTexFiles.length > 0) {
+    prompt += createProjectSummary(projectContext) + '\n';
+  }
+
+  prompt += `### Current Document Context ###\n` +
     `${content.before.slice(-1000)}\n` +
-    `### End of the paper ###`
-  );
+    `### End of current context ###`;
+
+  return prompt;
 }

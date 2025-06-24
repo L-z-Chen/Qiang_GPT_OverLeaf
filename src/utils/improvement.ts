@@ -5,17 +5,33 @@ import {
   DEFAULT_MODEL,
 } from '../constants';
 import { postProcessToken, renderPrompt } from './helper';
-import { Options, TextContent, StreamChunk } from '../types';
+import { Options, TextContent, StreamChunk, ProjectContext } from '../types';
+import { scanProjectFiles, createProjectSummary } from './projectScanner';
 
 const HOSTED_IMPROVE_URL = 'https://embedding.azurewebsites.net/improve';
 
 export async function getImprovement(content: TextContent, prompt: string, options: Options, signal: AbortSignal) {
+  // Scan project files for context
+  let projectContext: ProjectContext | null = null;
+  try {
+    projectContext = await scanProjectFiles();
+  } catch (error) {
+    console.warn('Failed to scan project files, continuing without project context:', error);
+  }
+
   if (!options.apiKey) {
     try {
+      const requestBody: any = { content: content.selection };
+      
+      // Add project context if available
+      if (projectContext && projectContext.allTexFiles.length > 0) {
+        requestBody.projectContext = createProjectSummary(projectContext);
+      }
+
       const response = await fetch(HOSTED_IMPROVE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: content.selection }),
+        body: JSON.stringify(requestBody),
         signal: signal,
       });
       if (!response.ok) {
@@ -37,7 +53,7 @@ export async function getImprovement(content: TextContent, prompt: string, optio
         messages: [
           {
             role: 'user',
-            content: buildImprovePrompt(content, prompt),
+            content: buildImprovePrompt(content, prompt, projectContext),
           },
         ],
         model: options.model || DEFAULT_MODEL,
@@ -55,12 +71,27 @@ export async function getImprovement(content: TextContent, prompt: string, optio
 export async function* getImprovementStream(content: TextContent, prompt: string, options: Options, signal: AbortSignal):
   AsyncGenerator<StreamChunk, void, unknown> {
 
+  // Scan project files for context
+  let projectContext: ProjectContext | null = null;
+  try {
+    projectContext = await scanProjectFiles();
+  } catch (error) {
+    console.warn('Failed to scan project files, continuing without project context:', error);
+  }
+
   if (!options.apiKey) {
     try {
+      const requestBody: any = { content: content.selection, stream: true };
+      
+      // Add project context if available
+      if (projectContext && projectContext.allTexFiles.length > 0) {
+        requestBody.projectContext = createProjectSummary(projectContext);
+      }
+
       const response = await fetch(HOSTED_IMPROVE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: content.selection, stream: true }),
+        body: JSON.stringify(requestBody),
         signal: signal,
       });
 
@@ -100,7 +131,7 @@ export async function* getImprovementStream(content: TextContent, prompt: string
         messages: [
           {
             role: 'user',
-            content: buildImprovePrompt(content, prompt),
+            content: buildImprovePrompt(content, prompt, projectContext),
           },
         ],
         model: options.model || DEFAULT_MODEL,
@@ -120,13 +151,22 @@ export async function* getImprovementStream(content: TextContent, prompt: string
   }
 }
 
-function buildImprovePrompt(content: TextContent, template: string) {
+function buildImprovePrompt(content: TextContent, template: string, projectContext: ProjectContext | null) {
   if (!!template) {
     if (template.indexOf('<input>') >= 0)
       return template.replace('<input>', content.selection);
 
-    return renderPrompt(template, content);
+    return renderPrompt(template, content, projectContext);
   }
 
-  return `Rewrite and improve the following content:\n` + `${content.selection}`;
+  let prompt = `Rewrite and improve the following content:\n`;
+  
+  // Add project context if available
+  if (projectContext && projectContext.allTexFiles.length > 0) {
+    prompt += `\n### Project Context ###\n${createProjectSummary(projectContext)}\n`;
+  }
+  
+  prompt += `${content.selection}`;
+  
+  return prompt;
 }
